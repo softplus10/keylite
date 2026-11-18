@@ -4,9 +4,13 @@ export KEYLITE_DB="$(mktemp -u /tmp/keylite-smoke-XXXX.sqlite)"
 export KEYLITE_LISTEN=127.0.0.1:18787
 export KEYLITE_MAX_USERS=1
 export KEYLITE_MAX_VAULTS_PER_USER=1
-cargo run -p keylite-native &
-pid=$!
-trap 'kill "$pid" 2>/dev/null || true; rm -f "$KEYLITE_DB" "$KEYLITE_DB-wal" "$KEYLITE_DB-shm"' EXIT
+if [ -z "${KEYLITE_SMOKE_URL:-}" ]; then
+  cargo run -p keylite-native &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true; rm -f "$KEYLITE_DB" "$KEYLITE_DB-wal" "$KEYLITE_DB-shm"' EXIT
+else
+  export KEYLITE_LISTEN="${KEYLITE_SMOKE_URL#http://}"
+fi
 for i in $(seq 1 200); do
   if curl -s "http://$KEYLITE_LISTEN/api/vaults" >/dev/null; then break; fi
   sleep 0.2
