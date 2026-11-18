@@ -1,10 +1,10 @@
 name = "keylite"
-main = "build/worker/shim.mjs"
+main = "crates/worker/build/worker/shim.mjs"
 compatibility_date = "2026-11-18"
 workers_dev = true
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "cd crates/worker && cargo install -q worker-build && worker-build --release"
 
 [vars]
 KEYLITE_MAX_USERS = "0"
