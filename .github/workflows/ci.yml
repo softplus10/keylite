@@ -26,4 +26,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p keylite-worker --target wasm32-unknown-unknown
       - run: cargo install worker-build --locked
-      - run: worker-build --release
+      - run: cd crates/worker && worker-build --release
