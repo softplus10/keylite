@@ -118,9 +118,22 @@ fn affected(result: &worker::d1::D1Result) -> Result<bool> {
     Ok(result.meta()?.and_then(|m| m.changes).unwrap_or(0) > 0)
 }
 
+fn with_cors(response: Response) -> Result<Response> {
+    response.headers().set("Access-Control-Allow-Origin", "*")?;
+    response.headers().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")?;
+    response.headers().set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match")?;
+    response.headers().set("Access-Control-Expose-Headers", "ETag, X-Keylite-Revision")?;
+    response.headers().set("Access-Control-Max-Age", "86400")?;
+    Ok(response)
+}
+
 #[event(fetch, respond_with_errors)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    Router::new()
+    // Bearer-token authentication does not use cross-origin cookies.
+    if req.method() == Method::Options {
+        return with_cors(Response::empty()?.with_status(204));
+    }
+    let response = Router::new()
         .post_async("/api/register", |mut req, ctx| async move {
             let input: Credentials = match req.json().await {
                 Ok(input) => input, Err(_) => return fail(400, "invalid request")
@@ -309,5 +322,6 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             if !affected(&result)? {return fail(404, "vault not found");}
             Ok(Response::empty()?.with_status(204))
         })
-        .run(req, env).await
+        .run(req, env).await?;
+    with_cors(response)
 }
