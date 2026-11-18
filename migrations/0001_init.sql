@@ -28,7 +28,17 @@ CREATE TABLE IF NOT EXISTS vault_revisions (
     vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
     revision INTEGER NOT NULL,
     hash TEXT NOT NULL,
-    blob BLOB NOT NULL,
+    size INTEGER NOT NULL,
+    commit_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (vault_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS vault_chunks (
+    vault_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (vault_id, revision, chunk_index),
+    FOREIGN KEY (vault_id, revision) REFERENCES vault_revisions(vault_id, revision) ON DELETE CASCADE
 );
