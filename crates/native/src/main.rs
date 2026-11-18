@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, MAX_HISTORY};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, MAX_HISTORY, generate_account_number, normalize_account_number, account_digest};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,8 +54,7 @@ fn now() -> i64 {
 
 #[derive(Deserialize)]
 struct Credentials {
-    email: String,
-    password: String,
+    account_number: String,
 }
 
 #[derive(Deserialize)]
@@ -110,50 +109,57 @@ fn vault_head(conn: &Connection, vault_id: &str, user_id: &str) -> ApiResult<Hea
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "vault not found"))
 }
 
-async fn register(State(db): State<Db>, Json(input): Json<Credentials>) -> ApiResult<StatusCode> {
-    let email = input.email.trim().to_lowercase();
-    if !email.contains('@') || email.len() > 254 || input.password.len() < 12 || input.password.len() > 1024 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid email or password length (minimum 12)"));
-    }
-    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
-        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "salt generation failed"))?;
-    let password_hash = Argon2::default().hash_password(input.password.as_bytes(), &salt)
-        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed"))?.to_string();
-    let registration_limit = limit("KEYLITE_MAX_USERS");
-    let result = lock_db(&db)?.execute(
-        "INSERT INTO users (id, email, password_hash)
-         SELECT ?1, ?2, ?3 WHERE ?4 = 0 OR (SELECT count(*) FROM users) < ?4",
-        params![Uuid::new_v4().to_string(), email, password_hash, registration_limit],
+fn make_session(conn: &Connection, user_id: &str) -> ApiResult<String> {
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    conn.execute(
+        "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![digest(token.as_bytes()), user_id, now() + 86400],
+    ).map_err(db_error)?;
+    Ok(token)
+}
+
+#[derive(Serialize)]
+struct RegistrationResponse {
+    account_number: String,
+    token: String,
+}
+
+async fn register(State(db): State<Db>) -> ApiResult<(StatusCode, Json<RegistrationResponse>)> {
+    let account_number = generate_account_number(
+        &Uuid::new_v4().to_string(), &Uuid::new_v4().to_string()
     );
-    match result {
-        Ok(1) => Ok(StatusCode::CREATED),
-        Ok(_) => Err(ApiError::new(StatusCode::FORBIDDEN, "user registration limit reached")),
-        Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            Err(ApiError::new(StatusCode::CONFLICT, "account already exists")),
-        Err(err) => Err(db_error(err)),
+    let account_hash = account_digest(
+        &normalize_account_number(&account_number)
+            .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid generated account number"))?
+    );
+    let user_id = Uuid::new_v4().to_string();
+    let registration_limit = limit("KEYLITE_MAX_USERS");
+    let mut conn = lock_db(&db)?;
+    let tx = conn.transaction().map_err(db_error)?;
+    let created = tx.execute(
+        "INSERT INTO users (id, account_key_hash, created_at)
+         SELECT ?1, ?2, ?3 WHERE ?4 = 0 OR (SELECT count(*) FROM users) < ?4",
+        params![user_id, account_hash, now(), registration_limit],
+    ).map_err(db_error)?;
+    if created == 0 {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "user registration limit reached"));
     }
+    let token = make_session(&tx, &user_id)?;
+    tx.commit().map_err(db_error)?;
+    Ok((StatusCode::CREATED, Json(RegistrationResponse { account_number, token })))
 }
 
 async fn login(State(db): State<Db>, Json(input): Json<Credentials>) -> ApiResult<Json<TokenResponse>> {
-    let email = input.email.trim().to_lowercase();
-    let user: Option<(String, String)> = lock_db(&db)?.query_row(
-        "SELECT id, password_hash FROM users WHERE email = ?1",
-        params![email],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+    let normalized = normalize_account_number(&input.account_number)
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "invalid account number"))?;
+    let hash = account_digest(&normalized);
+    let conn = lock_db(&db)?;
+    let user_id: Option<String> = conn.query_row(
+        "SELECT id FROM users WHERE account_key_hash = ?1",
+        params![hash], |row| row.get(0)
     ).optional().map_err(db_error)?;
-
-    let valid = user.as_ref().and_then(|(_, hash)| PasswordHash::new(hash).ok())
-        .map(|hash| Argon2::default().verify_password(input.password.as_bytes(), &hash).is_ok())
-        .unwrap_or(false);
-    if !valid {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials"));
-    }
-    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let token_hash = digest(token.as_bytes());
-    lock_db(&db)?.execute(
-        "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
-        params![token_hash, user.unwrap().0, now() + 86400],
-    ).map_err(db_error)?;
+    let user_id = user_id.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "invalid account number"))?;
+    let token = make_session(&conn, &user_id)?;
     Ok(Json(TokenResponse { token }))
 }
 
@@ -323,6 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen = env::var("KEYLITE_LISTEN").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let conn = Connection::open(path)?;
     conn.execute_batch(include_str!("../../../migrations/0001_init.sql"))?;
+    let users_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'", [], |row| row.get(0))?;
+    if !users_sql.contains("account_key_hash") {
+        return Err(std::io::Error::other("Legacy email/password database detected. Back up your DB, then apply the account-number breaking migration manually.").into());
+    }
     let db: Db = Arc::new(Mutex::new(conn));
     let app = Router::new()
         .route("/api/register", post(register))
