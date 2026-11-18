@@ -2,7 +2,7 @@
 
 Keylite is an experimental Rust service for synchronizing opaque encrypted vault files, including KDBX. The server does not open, parse, or decrypt vault contents.
 
-**Project status:** native Rust, scratch-container, Workers WebAssembly, local D1, CAS and multi-megabyte upload tests pass in GitHub Actions. Live Cloudflare deployment and GHCR publication have not been independently verified. Keep independent backups of vault files.
+**Project status:** native Rust, scratch-container, Workers WebAssembly, local D1, CAS and multi-megabyte upload tests pass in GitHub Actions. Cloudflare Workers Builds is connected to the master branch and deploys the Worker; CI checks native and local Workers/D1 tests. GHCR publication has not been independently verified. Keep independent backups of vault files.
 
 ## Architecture
 
@@ -64,7 +64,7 @@ The native database and D1 both store up to 8 MiB per revision in 512 KiB chunks
 
 The Dockerfile produces a statically linked executable in a scratch image. Mount a writable /data directory for UID 65532. The image workflow publishes to GHCR on master pushes and version tags.
 
-Cloudflare deployment is manual via the Cloudflare workflow, requiring CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID GitHub secrets and KEYLITE_D1_DATABASE_ID plus KEYLITE_WORKER_URL repository variables. The workflow applies migrations, deploys and verifies that the protected API returns HTTP 401 to an unauthenticated request. See docs/deployment.md for details.
+Cloudflare Workers Builds is connected directly to softplus10/keylite on master. Cloudflare runs the Rust/WASM build and deploys using Wrangler. The D1 database is managed in the Hanseung Kim account; schema changes must be applied with D1 migrations before deploying. See docs/deployment.md for details.
 
 ## History
 
