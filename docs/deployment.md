@@ -1,15 +1,28 @@
-Deployment
-==========
+# Deployment
 
-Native: Build with cargo build --release -p keylite-native and run with KEYLITE_LISTEN and KEYLITE_DB. The image workflow builds linux/amd64 and linux/arm64 scratch-based images and pushes to ghcr.io/softplus10/keylite. Supply a writable /data volume owned by UID 65532.
+## Cloudflare Workers Builds
 
-The following two variables are shared by the native and Workers deployments:
+The `Hanseung Kim` Cloudflare account owns the `keylite` D1 database, bound as `DB` in `wrangler.toml`. The account's Workers Builds integration is connected directly to `softplus10/keylite`, production branch `master`.
 
-* KEYLITE_MAX_USERS: 0 means unlimited, positive values cap account registrations.
-* KEYLITE_MAX_VAULTS_PER_USER: 0 means unlimited, positive values cap per-user vault creation.
+Cloudflare Builds provisions Rust and the `wasm32-unknown-unknown` target, compiles `crates/worker` with `worker-build`, and deploys via Wrangler. There is no GitHub Actions production deployment workflow for Cloudflare.
 
-For Workers, edit wrangler.toml [vars]. Set GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and repository variable KEYLITE_D1_DATABASE_ID. Create a D1 database named keylite, then run the manual Cloudflare workflow. It applies migrations remotely and deploys.
+The runtime variables `KEYLITE_MAX_USERS` and `KEYLITE_MAX_VAULTS_PER_USER` are configured in `wrangler.toml`. A value of `0` means unlimited, and a positive integer is the maximum number of users or vaults per user.
 
-Both backends limit an entire uploaded vault to 8 MiB. D1 has a 2 MB maximum BLOB/row size. The storage layer splits each version into 512 KiB chunks and stores up to 8 MiB per version.
+D1 schema changes must be applied before incompatible code is deployed. Initial tables and CAS trigger are installed. Future migrations should be tracked through Wrangler/D1 migration records to avoid unintentional repeat application.
 
-Do not expose the API without HTTPS and request-rate limiting. Public registration is enabled when KEYLITE_MAX_USERS=0.
+## Self-hosted
+
+Build with `cargo build --release -p keylite-native`, or build and run the scratch container. The GitHub Container workflow publishes multi-architecture images to GHCR and the regular CI tests the native and Workers APIs.
+
+Mount a writable `/data` volume owned by UID 65532 for the scratch image. The database is stored in `/data/keylite.sqlite`.
+
+Set the following environment variables as needed:
+
+- `KEYLITE_MAX_USERS=0` — unlimited users (positive values cap registrations)
+- `KEYLITE_MAX_VAULTS_PER_USER=0` — unlimited vaults per user (positive values cap vault creation)
+- `KEYLITE_LISTEN=0.0.0.0:8787`
+- `KEYLITE_DB=/data/keylite.sqlite`
+
+Both backends store vault blobs in 512 KiB chunks, with an 8 MiB per-version limit. The server does not interpret or decrypt KDBX files.
+
+**Important:** This is experimental software. Protect public endpoints with HTTPS and rate limiting; retain independent backup copies of vaults and validate restore procedures before relying on the service.
