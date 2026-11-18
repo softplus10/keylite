@@ -48,6 +48,16 @@ test "$code" = 404
 code=$(http -H "Authorization: Bearer $token" "$base/vaults/$id")
 test "$code" = 200
 test "$(cat /tmp/keylite-output)" = version-7
+python3 - <<'PY'
+from pathlib import Path
+Path('/tmp/keylite-large.bin').write_bytes(bytes(range(256)) * 12288)
+PY
+code=$(http -X PUT -H "Authorization: Bearer $token" -H "If-Match: \"blake3:$hash\"" --data-binary @/tmp/keylite-large.bin "$base/vaults/$id")
+test "$code" = 200
+code=$(http -H "Authorization: Bearer $token" "$base/vaults/$id")
+test "$code" = 200
+cmp /tmp/keylite-large.bin /tmp/keylite-output
+rm -f /tmp/keylite-large.bin
 code=$(http -X POST -H "Authorization: Bearer $token" "$base/logout")
 test "$code" = 204
 code=$(http -H "Authorization: Bearer $token" "$base/vaults")
