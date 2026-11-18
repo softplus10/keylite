@@ -2,7 +2,7 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use worker::*;
@@ -40,7 +40,11 @@ struct HeadRow {
 #[derive(Deserialize)]
 struct ContentRow {
     hash: String,
-    blob: Vec<u8>,
+    size: i64,
+}
+#[derive(Deserialize)]
+struct ChunkRow {
+    data: Vec<u8>,
 }
 #[derive(Deserialize)]
 struct CountRow {
@@ -103,6 +107,13 @@ fn binary(data: Vec<u8>, hash: &str, revision: i64) -> Result<Response> {
     response.headers().set("Cache-Control", "no-store")?;
     Ok(response)
 }
+async fn read_chunks(db: &D1Database, id: &str, revision: i64) -> Result<Vec<u8>> {
+    let chunks = query!(db,
+        "SELECT data FROM vault_chunks WHERE vault_id=?1 AND revision=?2 ORDER BY chunk_index",
+        id, revision)?.all().await?.results::<ChunkRow>()?;
+    Ok(chunks.into_iter().flat_map(|chunk| chunk.data).collect())
+}
+
 fn affected(result: &worker::d1::D1Result) -> Result<bool> {
     Ok(result.meta()?.and_then(|m| m.changes).unwrap_or(0) > 0)
 }
@@ -199,10 +210,16 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             if head.revision == 0 {return fail(404, "vault is empty");}
             let db = ctx.d1("DB")?;
             let row = query!(&db,
-                "SELECT hash,blob FROM vault_revisions WHERE vault_id=?1 AND revision=?2",
+                "SELECT hash,size FROM vault_revisions WHERE vault_id=?1 AND revision=?2",
                 id, head.revision)?.first::<ContentRow>(None).await?;
             match row {
-                Some(row) => binary(row.blob, &row.hash, head.revision),
+                Some(row) => {
+                    let blob = read_chunks(&db, id, head.revision).await?;
+                    if blob.len() as i64 != row.size || digest(&blob) != row.hash {
+                        return fail(500, "vault integrity check failed");
+                    }
+                    binary(blob, &row.hash, head.revision)
+                },
                 None => fail(404, "revision not found")
             }
         })
@@ -212,7 +229,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             if owned_head(&ctx, &user, id).await?.is_none() { return fail(404, "vault not found"); }
             let db = ctx.d1("DB")?;
             let rows = query!(&db,
-                "SELECT revision,hash,length(blob) AS size,created_at FROM vault_revisions
+                "SELECT revision,hash,size,created_at FROM vault_revisions
                  WHERE vault_id=?1 ORDER BY revision DESC LIMIT 5", id)?
                 .all().await?.results::<Revision>()?;
             Response::from_json(&rows)
@@ -225,9 +242,15 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 Some(v) if v > 0 => v, _ => return fail(400, "invalid revision")
             };
             let db = ctx.d1("DB")?;
-            match query!(&db, "SELECT hash,blob FROM vault_revisions WHERE vault_id=?1 AND revision=?2",
+            match query!(&db, "SELECT hash,size FROM vault_revisions WHERE vault_id=?1 AND revision=?2",
                 id, revision)?.first::<ContentRow>(None).await? {
-                Some(row) => binary(row.blob, &row.hash, revision),
+                Some(row) => {
+                    let blob = read_chunks(&db, id, revision).await?;
+                    if blob.len() as i64 != row.size || digest(&blob) != row.hash {
+                        return fail(500, "vault integrity check failed");
+                    }
+                    binary(blob, &row.hash, revision)
+                },
                 None => fail(404, "revision not found")
             }
         })
@@ -244,16 +267,27 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 }))?.with_status(412));
             }
             let bytes = req.bytes().await?;
-            if bytes.len() > MAX_BLOB_BYTES {return fail(413, "vault exceeds 1 MiB");}
+            if bytes.len() > MAX_BLOB_BYTES {return fail(413, "vault exceeds 8 MiB");}
             let hash = digest(&bytes);
             let revision = before.revision + 1;
             let db = ctx.d1("DB")?;
-            let result = query!(&db,
-                "INSERT INTO vault_revisions(vault_id,revision,hash,blob)
-                 SELECT id,latest_revision+1,?1,?2 FROM vaults
-                 WHERE id=?3 AND user_id=?4 AND latest_revision=?5 AND latest_hash IS ?6",
-                hash, bytes, id, user, before.revision, before.hash)?.run().await?;
-            if !affected(&result)? {
+            let commit_id = random_id();
+            let mut statements = vec![query!(&db,
+                "INSERT INTO vault_revisions(vault_id,revision,hash,size,commit_id)
+                 SELECT id,latest_revision+1,?1,?2,?3 FROM vaults
+                 WHERE id=?4 AND user_id=?5 AND latest_revision=?6 AND latest_hash IS ?7",
+                hash, bytes.len() as i64, commit_id, id, user, before.revision, before.hash)?];
+            for (index, chunk) in bytes.chunks(CHUNK_BYTES).enumerate() {
+                let chunk = chunk.to_vec();
+                statements.push(query!(&db,
+                    "INSERT INTO vault_chunks(vault_id,revision,chunk_index,data)
+                     SELECT ?1,?2,?3,?4 WHERE EXISTS (
+                         SELECT 1 FROM vault_revisions WHERE vault_id=?1 AND revision=?2 AND commit_id=?5
+                     )",
+                    id, revision, index as i64, chunk, commit_id)?);
+            }
+            let results = db.batch(statements).await?;
+            if !affected(&results[0])? {
                 let current = owned_head(&ctx, &user, id).await?;
                 return Ok(Response::from_json(&serde_json::json!({
                     "error": "stale vault version", "head": current
