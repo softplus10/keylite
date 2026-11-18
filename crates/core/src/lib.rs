@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_BLOB_BYTES: usize = 1024 * 1024;
 pub const MAX_HISTORY: i64 = 5;
@@ -24,7 +24,7 @@ pub struct Head {
     pub hash: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Revision {
     pub revision: i64,
     pub hash: String,
