@@ -1,5 +1,5 @@
 FROM rust:1-alpine AS builder
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache build-base
 WORKDIR /src
 COPY Cargo.toml ./
 COPY crates ./crates
