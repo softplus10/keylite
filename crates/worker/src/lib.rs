@@ -5,8 +5,6 @@ use worker::*;
 
 #[derive(Deserialize)]
 struct Credentials { account_number: String }
-#[derive(Serialize)]
-struct RegistrationResponse { account_number: String, token: String }
 #[derive(Deserialize)]
 struct CreateVault {
     name: String,
