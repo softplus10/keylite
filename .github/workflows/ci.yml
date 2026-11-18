@@ -17,6 +17,19 @@ jobs:
       - run: cargo test -p keylite-core -p keylite-native
       - run: cargo clippy -p keylite-core -p keylite-native --all-targets -- -D warnings
       - run: bash scripts/smoke.sh
+      - name: Build scratch-based container
+        run: docker build --tag keylite:ci .
+      - name: Run scratch image
+        run: |
+          mkdir -p /tmp/keylite-container-data
+          sudo chown 65532:65532 /tmp/keylite-container-data
+          docker run --rm -d --name keylite-ci -p 18788:8787 -v /tmp/keylite-container-data:/data keylite:ci
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:18788/api/vaults; then break; fi
+            sleep 1
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18788/api/vaults)" = 401
+          docker rm -f keylite-ci
   worker:
     runs-on: ubuntu-latest
     steps:
