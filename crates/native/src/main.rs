@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 type Db = Arc<Mutex<Connection>>;
+
+fn limit(name: &str) -> i64 {
+    env::var(name).ok().and_then(|v| v.parse::<i64>().ok()).filter(|n| *n >= 0).unwrap_or(0)
+}
+
 type ApiResult<T> = Result<T, ApiError>;
 
 #[derive(Debug)]
@@ -111,12 +116,15 @@ async fn register(State(db): State<Db>, Json(input): Json<Credentials>) -> ApiRe
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = Argon2::default().hash_password(input.password.as_bytes(), &salt)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed"))?.to_string();
+    let registration_limit = limit("KEYLITE_MAX_USERS");
     let result = lock_db(&db)?.execute(
-        "INSERT INTO users (id, email, password_hash) VALUES (?1, ?2, ?3)",
-        params![Uuid::new_v4().to_string(), email, password_hash],
+        "INSERT INTO users (id, email, password_hash)
+         SELECT ?1, ?2, ?3 WHERE ?4 = 0 OR (SELECT count(*) FROM users) < ?4",
+        params![Uuid::new_v4().to_string(), email, password_hash, registration_limit],
     );
     match result {
-        Ok(_) => Ok(StatusCode::CREATED),
+        Ok(1) => Ok(StatusCode::CREATED),
+        Ok(_) => Err(ApiError::new(StatusCode::FORBIDDEN, "user registration limit reached")),
         Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             Err(ApiError::new(StatusCode::CONFLICT, "account already exists")),
         Err(err) => Err(db_error(err)),
@@ -174,10 +182,16 @@ async fn create_vault(State(db): State<Db>, headers: HeaderMap, Json(input): Jso
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid vault name"));
     }
     let id = Uuid::new_v4().to_string();
-    lock_db(&db)?.execute(
-        "INSERT INTO vaults (id, user_id, name) VALUES (?1, ?2, ?3)",
-        params![id, user, name],
+    let vault_limit = limit("KEYLITE_MAX_VAULTS_PER_USER");
+    let inserted = lock_db(&db)?.execute(
+        "INSERT INTO vaults (id, user_id, name)
+         SELECT ?1, ?2, ?3 WHERE ?4 = 0 OR
+            (SELECT count(*) FROM vaults WHERE user_id = ?2) < ?4",
+        params![id, user, name, vault_limit],
     ).map_err(db_error)?;
+    if inserted == 0 {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "per-user vault limit reached"));
+    }
     Ok((StatusCode::CREATED, Json(VaultResponse { id, head: Head {revision: 0, hash: None} })))
 }
 
