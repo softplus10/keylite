@@ -13,6 +13,8 @@ use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tower_http::cors::{Any, CorsLayer};
+use axum::http::Method;
 
 type Db = Arc<Mutex<Connection>>;
 
@@ -331,6 +333,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/vaults/:id/history", get(history))
         .route("/api/vaults/:id/history/:revision", get(old_revision))
         .with_state(db)
+        .layer(CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::IF_MATCH])
+            .expose_headers([header::ETAG, header::HeaderName::from_static("x-keylite-revision")]))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BLOB_BYTES));
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     eprintln!("Keylite native listening at {listen}");
