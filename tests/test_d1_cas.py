@@ -10,7 +10,7 @@ class DatabaseContractTest(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.db.executescript((ROOT / "migrations/0001_init.sql").read_text())
         self.db.executescript((ROOT / "migrations/0002_d1_cas.sql").read_text())
-        self.db.execute("INSERT INTO users(id,account_key_hash,created_at) VALUES ('u','hash',0')")
+        self.db.execute("INSERT INTO users(id,account_key_hash,created_at) VALUES ('u','hash',0)")
         self.db.execute("INSERT INTO vaults(id,user_id,name) VALUES ('v','u','test')")
 
     def upload(self, revision, previous_hash, new_hash):
