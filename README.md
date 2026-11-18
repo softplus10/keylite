@@ -45,7 +45,7 @@ The server stores at most five revisions per vault. Each revision has a monotoni
 
 ## Limits and security
 
-- Maximum vault size is 1 MiB for both servers. D1 supports this within its 2 MB per-value limit; larger vaults require chunked storage.
+- Maximum vault size is 8 MiB for both servers. D1 supports this within its 2 MB per-value limit; 512 KiB chunks are stored in a separate table.
 - Authentication passwords are hashed with Argon2id; the KDBX master password remains exclusively with the client.
 - Bearer tokens expire after 24 hours and only token hashes are stored.
 - TLS, registration throttling, email verification, monitoring, and backup procedures are required before public deployment.
@@ -54,7 +54,7 @@ The server stores at most five revisions per vault. Each revision has a monotoni
 
 ## Migration plan
 
-D1 limits the size of individual BLOB values. D1 uses a SQL trigger to atomically update the HEAD and garbage-collect history. Large-file chunk support remains future work.
+D1 limits the size of individual BLOB values. D1 stores up to 8 MiB per version in 512 KiB chunks, with SQL-batch atomicity and a trigger for HEAD movement and garbage collection.
 
 ## History
 
