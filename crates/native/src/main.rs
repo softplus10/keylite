@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, MAX_HISTORY};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, MAX_HISTORY};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -207,6 +207,15 @@ fn bytes_response(blob: Vec<u8>, revision: i64, hash: &str) -> ApiResult<Respons
     Ok(response)
 }
 
+fn read_chunks(conn: &Connection, id: &str, revision: i64) -> ApiResult<Vec<u8>> {
+    let mut stmt = conn.prepare(
+        "SELECT data FROM vault_chunks WHERE vault_id=?1 AND revision=?2 ORDER BY chunk_index",
+    ).map_err(db_error)?;
+    let chunks = stmt.query_map(params![id, revision], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(db_error)?.collect::<Result<Vec<_>, _>>().map_err(db_error)?;
+    Ok(chunks.into_iter().flatten().collect())
+}
+
 async fn get_vault(State(db): State<Db>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {
     let user = authenticated(&db, &headers)?;
     let conn = lock_db(&db)?;
@@ -214,11 +223,12 @@ async fn get_vault(State(db): State<Db>, Path(id): Path<String>, headers: Header
     if head.revision == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "vault is empty"));
     }
-    let blob: Vec<u8> = conn.query_row(
-        "SELECT blob FROM vault_revisions WHERE vault_id = ?1 AND revision = ?2",
-        params![id, head.revision], |r| r.get(0),
-    ).map_err(db_error)?;
-    bytes_response(blob, head.revision, head.hash.as_deref().unwrap_or(""))
+    let blob = read_chunks(&conn, &id, head.revision)?;
+    let hash = head.hash.as_deref().unwrap_or("");
+    if digest(&blob) != hash {
+        return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "vault integrity check failed"));
+    }
+    bytes_response(blob, head.revision, hash)
 }
 
 async fn history(State(db): State<Db>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Json<Vec<Revision>>> {
@@ -226,7 +236,7 @@ async fn history(State(db): State<Db>, Path(id): Path<String>, headers: HeaderMa
     let conn = lock_db(&db)?;
     vault_head(&conn, &id, &user)?;
     let mut stmt = conn.prepare(
-        "SELECT revision, hash, length(blob), created_at FROM vault_revisions WHERE vault_id = ?1 ORDER BY revision DESC LIMIT 5",
+        "SELECT revision, hash, size, created_at FROM vault_revisions WHERE vault_id = ?1 ORDER BY revision DESC LIMIT 5",
     ).map_err(db_error)?;
     let versions = stmt.query_map(params![id], |r| Ok(Revision {
         revision: r.get(0)?, hash: r.get(1)?, size: r.get(2)?, created_at: r.get(3)?,
@@ -238,18 +248,22 @@ async fn old_revision(State(db): State<Db>, Path((id, revision)): Path<(String, 
     let user = authenticated(&db, &headers)?;
     let conn = lock_db(&db)?;
     vault_head(&conn, &id, &user)?;
-    let result: Option<(String, Vec<u8>)> = conn.query_row(
-        "SELECT hash, blob FROM vault_revisions WHERE vault_id = ?1 AND revision = ?2",
-        params![id, revision], |r| Ok((r.get(0)?, r.get(1)?)),
+    let hash: Option<String> = conn.query_row(
+        "SELECT hash FROM vault_revisions WHERE vault_id = ?1 AND revision = ?2",
+        params![id, revision], |r| r.get(0),
     ).optional().map_err(db_error)?;
-    let (hash, blob) = result.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "revision not found"))?;
+    let hash = hash.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "revision not found"))?;
+    let blob = read_chunks(&conn, &id, revision)?;
+    if digest(&blob) != hash {
+        return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "vault integrity check failed"));
+    }
     bytes_response(blob, revision, &hash)
 }
 
 async fn put_vault(State(db): State<Db>, Path(id): Path<String>, headers: HeaderMap, bytes: Bytes) -> ApiResult<Response> {
     let user = authenticated(&db, &headers)?;
     if bytes.len() > MAX_BLOB_BYTES {
-        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "vault exceeds 1 MiB"));
+        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "vault exceeds 8 MiB"));
     }
     let if_match = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::new(StatusCode::PRECONDITION_REQUIRED, "If-Match is required"))?;
@@ -269,8 +283,14 @@ async fn put_vault(State(db): State<Db>, Path(id): Path<String>, headers: Header
         return Ok(response);
     }
     let revision = previous.revision + 1;
-    tx.execute("INSERT INTO vault_revisions (vault_id, revision, hash, blob) VALUES (?1, ?2, ?3, ?4)",
-        params![id, revision, hash, bytes.as_ref()]).map_err(db_error)?;
+    tx.execute("INSERT INTO vault_revisions (vault_id, revision, hash, size, commit_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, revision, hash, bytes.len() as i64, Uuid::new_v4().to_string()]).map_err(db_error)?;
+    for (index, chunk) in bytes.chunks(CHUNK_BYTES).enumerate() {
+        tx.execute(
+            "INSERT INTO vault_chunks(vault_id,revision,chunk_index,data) VALUES(?1,?2,?3,?4)",
+            params![id, revision, index as i64, chunk],
+        ).map_err(db_error)?;
+    }
     tx.execute("UPDATE vaults SET latest_revision = ?1, latest_hash = ?2 WHERE id = ?3 AND user_id = ?4",
         params![revision, hash, id, user]).map_err(db_error)?;
     tx.execute(
