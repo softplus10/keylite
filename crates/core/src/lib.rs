@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-pub const MAX_BLOB_BYTES: usize = 1024 * 1024;
+pub const MAX_BLOB_BYTES: usize = 8 * 1024 * 1024;
+pub const CHUNK_BYTES: usize = 512 * 1024;
 pub const MAX_HISTORY: i64 = 5;
 
 pub fn digest(bytes: &[u8]) -> String {
