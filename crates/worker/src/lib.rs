@@ -1,4 +1,4 @@
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, generate_account_number, normalize_account_number, account_digest, generate_account_number, normalize_account_number, account_digest};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, generate_account_number, normalize_account_number, account_digest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use worker::*;
