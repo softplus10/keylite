@@ -2,16 +2,16 @@
 
 Keylite is an experimental Rust service for synchronizing opaque encrypted vault files, including KDBX. The server does not open, parse, or decrypt vault contents.
 
-**Project status:** the native SQLite API is implemented as a first prototype. The Cloudflare Workers/D1 backend is planned but not yet operational. Do not store your only copy of a vault here.
+**Project status:** the native SQLite API is implemented as a first prototype. The Cloudflare Workers/D1 backend is implemented but has not yet passed live deployment validation. Do not store your only copy of a vault here.
 
 ## Architecture
 
 - `keylite-core`: portable BLAKE3 hashing, CAS preconditions, version DTOs.
 - `keylite-native`: Axum HTTP API, SQLite persistence, Argon2id authentication.
 - `migrations`: SQLite-compatible schema.
-- `crates/worker`: Workers/D1 implementation notes; not part of the build yet.
+- `crates/worker`: Cloudflare Workers and D1 REST API implementation.
 
-The native server is intended to run as one small executable on Linux, OpenBSD, or similar systems. The cloud implementation will use workers-rs and D1 while sharing the protocol and core crate.
+The native server is intended to run as one small executable on Linux, OpenBSD, or similar systems. The cloud implementation uses workers-rs and D1 while sharing the protocol and core crate.
 
 ## Quick start
 
@@ -45,7 +45,7 @@ The server stores at most five revisions per vault. Each revision has a monotoni
 
 ## Limits and security
 
-- Maximum vault size in this initial release is 1 MiB. Larger files and D1 require chunked storage.
+- Maximum vault size is 1 MiB for both servers. D1 supports this within its 2 MB per-value limit; larger vaults require chunked storage.
 - Authentication passwords are hashed with Argon2id; the KDBX master password remains exclusively with the client.
 - Bearer tokens expire after 24 hours and only token hashes are stored.
 - TLS, registration throttling, email verification, monitoring, and backup procedures are required before public deployment.
@@ -54,7 +54,7 @@ The server stores at most five revisions per vault. Each revision has a monotoni
 
 ## Migration plan
 
-D1 limits the size of individual BLOB values. A future shared chunk schema and an atomic D1 commit protocol will replace the one-row native blob layout. Do not deploy the existing native migration to D1 and assume large-file or full concurrency support.
+D1 limits the size of individual BLOB values. D1 uses a SQL trigger to atomically update the HEAD and garbage-collect history. Large-file chunk support remains future work.
 
 ## History
 
