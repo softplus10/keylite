@@ -27,3 +27,15 @@ jobs:
       - run: cargo check -p keylite-worker --target wasm32-unknown-unknown
       - run: cargo install worker-build --locked
       - run: cd crates/worker && worker-build --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Initialize local D1 and test Workers API
+        run: |
+          sed -i 's/REPLACE_WITH_D1_DATABASE_ID/00000000-0000-0000-0000-000000000000/' wrangler.toml
+          sed -i 's/KEYLITE_MAX_USERS = "0"/KEYLITE_MAX_USERS = "1"/' wrangler.toml
+          sed -i 's/KEYLITE_MAX_VAULTS_PER_USER = "0"/KEYLITE_MAX_VAULTS_PER_USER = "1"/' wrangler.toml
+          npx --yes wrangler@4 d1 migrations apply keylite --local
+          npx --yes wrangler@4 dev --local --port 18787 > /tmp/keylite-worker.log 2>&1 &
+          export KEYLITE_SMOKE_URL=http://127.0.0.1:18787
+          bash scripts/smoke.sh || { cat /tmp/keylite-worker.log; exit 1; }
