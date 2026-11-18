@@ -7,7 +7,7 @@ Keylite is an experimental Rust service for synchronizing opaque encrypted vault
 ## Architecture
 
 - `keylite-core`: portable BLAKE3 hashing, CAS preconditions, version DTOs.
-- `keylite-native`: Axum HTTP API, SQLite persistence, Argon2id authentication.
+- `keylite-native`: Axum HTTP API, SQLite persistence, anonymous account-number authentication.
 - `migrations`: SQLite-compatible schema.
 - `crates/worker`: Cloudflare Workers and D1 REST API implementation.
 
@@ -28,8 +28,8 @@ All endpoints are prefixed with `/api`. After login, send `Authorization: Bearer
 
 | Method | Path | Description |
 | --- | --- | --- |
-| POST | /api/register | Create account with JSON email/password |
-| POST | /api/login | Return a bearer token |
+| POST | /api/register | Create an anonymous account; returns account_number and token (no request body) |
+| POST | /api/login | Accept JSON account_number and return a bearer token |
 | POST | /api/logout | Revoke the bearer token |
 | GET | /api/vaults | List vault metadata |
 | POST | /api/vaults | Create an empty vault with JSON `{"name":"personal"}` |
@@ -46,7 +46,7 @@ The server stores at most five revisions per vault. Each revision has a monotoni
 ## Limits and security
 
 - Maximum vault size is 8 MiB for both servers. D1 supports this within its 2 MB per-value limit; 512 KiB chunks are stored in a separate table.
-- Authentication passwords are hashed with Argon2id; the KDBX master password remains exclusively with the client.
+- Account numbers are random bearer credentials; only domain-separated BLAKE3 digests are stored. The KDBX master password remains exclusively with the client.
 - Bearer tokens expire after 24 hours and only token hashes are stored.
 - TLS, registration throttling, email verification, monitoring, and backup procedures are required before public deployment.
 - Conflict *detection* is supported, not automatic KDBX merging.
@@ -69,3 +69,9 @@ Cloudflare Workers Builds is connected directly to softplus10/keylite on master.
 ## History
 
 The former repository history was intentionally reset when this implementation replaced the initial prototype.
+
+## Account-number authentication
+
+Registration no longer collects email addresses or login passwords. `POST /api/register` takes no body and returns a newly generated, unrepeatable high-entropy account number and a one-day session token. `POST /api/login` accepts `{ "account_number": "..." }` and returns a new bearer token. Store the account number in the OS credential vault or in secure, origin-scoped device storage. A lost account number cannot be recovered from the server. Do not confuse it with the separate KDBX master password.
+
+**Breaking change:** Existing email/password accounts are intentionally not migrated. For old deployments, back up the database and account ownership information before using `migrations/0003_account_numbers.sql`. The native server fails closed on an obsolete users table rather than silently wiping it. Public deployments require IP-level rate limiting on registration and login.
