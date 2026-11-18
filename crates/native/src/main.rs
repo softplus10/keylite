@@ -1,6 +1,6 @@
 use std::{env, sync::{Arc, Mutex}, time::{SystemTime, UNIX_EPOCH}};
 
-use argon2::{password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString}, Argon2};
+use argon2::{password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString}, Argon2};
 use axum::{
     body::Bytes,
     extract::{Path, State},
@@ -113,7 +113,8 @@ async fn register(State(db): State<Db>, Json(input): Json<Credentials>) -> ApiRe
     if !email.contains('@') || email.len() > 254 || input.password.len() < 12 || input.password.len() > 1024 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid email or password length (minimum 12)"));
     }
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "salt generation failed"))?;
     let password_hash = Argon2::default().hash_password(input.password.as_bytes(), &salt)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed"))?.to_string();
     let registration_limit = limit("KEYLITE_MAX_USERS");
