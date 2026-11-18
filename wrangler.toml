@@ -2,6 +2,7 @@ name = "keylite"
 main = "crates/worker/build/worker/shim.mjs"
 compatibility_date = "2026-11-18"
 workers_dev = true
+preview_urls = false
 
 [build]
 command = "cd crates/worker && worker-build --release"
