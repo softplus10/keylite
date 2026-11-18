@@ -138,13 +138,18 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let raw = token();
             let db = ctx.d1("DB")?;
             let limit = quota(&ctx.env, "KEYLITE_MAX_USERS");
-            let inserted = query!(&db,
-                "INSERT INTO users(id,account_key_hash,created_at)
-                 SELECT ?1,?2,?3 WHERE ?4=0 OR (SELECT count(*) FROM users)<?4",
-                user,hash,now(),limit)?.run().await?;
-            if !affected(&inserted)? { return fail(403, "user registration limit reached"); }
-            query!(&db, "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?1,?2,?3)",
-                digest(raw.as_bytes()),user,now()+86400)?.run().await?;
+            // Create the account and its first session within one D1 batch transaction.
+            let results = db.batch(vec![
+                query!(&db,
+                    "INSERT INTO users(id,account_key_hash,created_at)
+                     SELECT ?1,?2,?3 WHERE ?4=0 OR (SELECT count(*) FROM users)<?4",
+                    user,hash,now(),limit)?,
+                query!(&db,
+                    "INSERT INTO sessions(token_hash,user_id,expires_at)
+                     SELECT ?1,?2,?3 WHERE EXISTS (SELECT 1 FROM users WHERE id=?2)",
+                    digest(raw.as_bytes()),user,now()+86400)?,
+            ]).await?;
+            if !affected(&results[0])? { return fail(403, "user registration limit reached"); }
             Ok(Response::from_json(&RegistrationResponse { account_number, token: raw })?.with_status(201))
         })
         .post_async("/api/login", |mut req, ctx| async move {
