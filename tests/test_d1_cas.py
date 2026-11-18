@@ -15,14 +15,17 @@ class DatabaseContractTest(unittest.TestCase):
 
     def upload(self, revision, previous_hash, new_hash):
         return self.db.execute(
-            """INSERT INTO vault_revisions(vault_id,revision,hash,blob)
-               SELECT id,latest_revision+1,?,? FROM vaults
+            """INSERT INTO vault_revisions(vault_id,revision,hash,size,commit_id)
+               SELECT id,latest_revision+1,?,?,? FROM vaults
                WHERE id='v' AND user_id='u' AND latest_revision=? AND latest_hash IS ?""",
-            (new_hash, new_hash.encode(), revision - 1, previous_hash),
+            (new_hash, len(new_hash), f"commit-{revision}", revision - 1, previous_hash),
         ).rowcount
 
     def test_cas_and_bounded_history(self):
         self.assertEqual(self.upload(1, None, "h1"), 1)
+        self.db.execute(
+            "INSERT INTO vault_chunks(vault_id,revision,chunk_index,data) VALUES ('v',1,0,X'616263')"
+        )
         self.assertEqual(self.upload(1, None, "stale"), 0)
         for revision in range(2, 9):
             self.assertEqual(self.upload(revision, f"h{revision-1}", f"h{revision}"), 1)
@@ -31,6 +34,9 @@ class DatabaseContractTest(unittest.TestCase):
         ).fetchall()
         self.assertEqual(rows, [(4,), (5,), (6,), (7,), (8,)])
         self.assertEqual(
+            self.db.execute("SELECT count(*) FROM vault_chunks WHERE revision=1").fetchone()[0], 0
+        )
+        self.assertEqual(
             self.db.execute("SELECT latest_revision,latest_hash FROM vaults WHERE id='v'").fetchone(),
             (8, "h8"),
         )
@@ -38,7 +44,7 @@ class DatabaseContractTest(unittest.TestCase):
     def test_trigger_rejects_out_of_sequence_revision(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute(
-                "INSERT INTO vault_revisions(vault_id,revision,hash,blob) VALUES ('v',3,'bad',X'01')"
+                "INSERT INTO vault_revisions(vault_id,revision,hash,size,commit_id) VALUES ('v',3,'bad',1,'bad-commit')"
             )
 
     def test_atomic_registration_and_vault_quotas(self):
