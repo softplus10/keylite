@@ -10,6 +10,6 @@ The following two variables are shared by the native and Workers deployments:
 
 For Workers, edit wrangler.toml [vars]. Set GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and repository variable KEYLITE_D1_DATABASE_ID. Create a D1 database named keylite, then run the manual Cloudflare workflow. It applies migrations remotely and deploys.
 
-Both backends limit an entire uploaded vault to 1 MiB. D1 has a 2 MB maximum BLOB/row size. Large attachments and chunked uploads are not yet supported.
+Both backends limit an entire uploaded vault to 8 MiB. D1 has a 2 MB maximum BLOB/row size. The storage layer splits each version into 512 KiB chunks and stores up to 8 MiB per version.
 
 Do not expose the API without HTTPS and request-rate limiting. Public registration is enabled when KEYLITE_MAX_USERS=0.
