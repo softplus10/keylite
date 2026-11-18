@@ -17,11 +17,13 @@ for i in $(seq 1 200); do
 done
 base="http://$KEYLITE_LISTEN/api"
 http() { curl -sS -o /tmp/keylite-output -w "%{http_code}" "$@"; }
-code=$(http -H 'Content-Type: application/json' -d '{"email":"a@example.org","password":"correct horse battery staple"}' "$base/register")
+code=$(http -X POST "$base/register")
 test "$code" = 201
-code=$(http -H 'Content-Type: application/json' -d '{"email":"b@example.org","password":"correct horse battery staple"}' "$base/register")
+account=$(jq -r .account_number </tmp/keylite-output)
+test "$(printf '%s' "$account" | tr -d '-' | wc -c)" = 40
+code=$(http -X POST "$base/register")
 test "$code" = 403
-code=$(http -H 'Content-Type: application/json' -d '{"email":"a@example.org","password":"correct horse battery staple"}' "$base/login")
+code=$(http -H 'Content-Type: application/json' -d "{\"account_number\":\"$account\"}" "$base/login")
 test "$code" = 200
 token=$(jq -r .token </tmp/keylite-output)
 code=$(http -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"primary"}' "$base/vaults")
