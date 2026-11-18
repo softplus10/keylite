@@ -10,7 +10,7 @@ class DatabaseContractTest(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.db.executescript((ROOT / "migrations/0001_init.sql").read_text())
         self.db.executescript((ROOT / "migrations/0002_d1_cas.sql").read_text())
-        self.db.execute("INSERT INTO users(id,email,password_hash) VALUES ('u','a@example.org','hash')")
+        self.db.execute("INSERT INTO users(id,account_key_hash,created_at) VALUES ('u','hash',0')")
         self.db.execute("INSERT INTO vaults(id,user_id,name) VALUES ('v','u','test')")
 
     def upload(self, revision, previous_hash, new_hash):
@@ -50,7 +50,7 @@ class DatabaseContractTest(unittest.TestCase):
     def test_atomic_registration_and_vault_quotas(self):
         max_users = 1
         self.assertEqual(self.db.execute(
-            "INSERT INTO users(id,email,password_hash) SELECT 'second','b@example.org','hash' "
+            "INSERT INTO users(id,account_key_hash,created_at) SELECT 'second','hash2',0 "
             "WHERE ?=0 OR (SELECT count(*) FROM users)<?",
             (max_users, max_users),
         ).rowcount, 0)
