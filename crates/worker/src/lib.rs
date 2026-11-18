@@ -1,20 +1,18 @@
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, generate_account_number, normalize_account_number, account_digest};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, generate_account_number, normalize_account_number, account_digest, generate_account_number, normalize_account_number, account_digest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use worker::*;
 
 #[derive(Deserialize)]
-struct Credentials {
-    account_number: String,
-}
+struct Credentials { account_number: String }
+#[derive(Serialize)]
+struct RegistrationResponse { account_number: String, token: String }
 #[derive(Deserialize)]
 struct CreateVault {
     name: String,
 }
 #[derive(Deserialize)]
-struct UserRow {
-    id: String,
-}
+struct UserRow { id: String }
 #[derive(Deserialize)]
 struct AuthRow {
     user_id: String,
@@ -134,31 +132,22 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     }
     let response = Router::new()
         .post_async("/api/register", |_req, ctx| async move {
-            let account_number = generate_account_number(
-                &random_id(), &random_id()
-            );
+            let account_number = generate_account_number(&Uuid::new_v4().to_string(), &Uuid::new_v4().to_string());
             let normalized = normalize_account_number(&account_number)
-                .ok_or_else(|| Error::RustError("invalid generated account".into()))?;
-            let account_hash = account_digest(&normalized);
-            let user_id = random_id();
-            let db = ctx.d1("DB")?;
-            let max = quota(&ctx.env, "KEYLITE_MAX_USERS");
-            let result = query!(&db,
-                "INSERT INTO users (id,account_key_hash,created_at)
-                 SELECT ?1,?2,?3 WHERE ?4=0 OR (SELECT count(*) FROM users)<?4",
-                user_id, account_hash, now(), max
-            )?.run().await?;
-            if !affected(&result)? {
-                return fail(403, "user registration limit reached");
-            }
+                .ok_or_else(|| Error::RustError("generated account invalid".into()))?;
+            let hash = account_digest(&normalized);
+            let user = random_id();
             let raw = token();
-            query!(&db,
-                "INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?1,?2,?3)",
-                digest(raw.as_bytes()), user_id, now()+86400
-            )?.run().await?;
-            Ok(Response::from_json(&RegistrationResponse {
-                account_number, token: raw
-            })?.with_status(201))
+            let db = ctx.d1("DB")?;
+            let limit = quota(&ctx.env, "KEYLITE_MAX_USERS");
+            let inserted = query!(&db,
+                "INSERT INTO users(id,account_key_hash,created_at)
+                 SELECT ?1,?2,?3 WHERE ?4=0 OR (SELECT count(*) FROM users)<?4",
+                user,hash,now(),limit)?.run().await?;
+            if !affected(&inserted)? { return fail(403, "user registration limit reached"); }
+            query!(&db, "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?1,?2,?3)",
+                digest(raw.as_bytes()),user,now()+86400)?.run().await?;
+            Ok(Response::from_json(&RegistrationResponse { account_number, token: raw })?.with_status(201))
         })
         .post_async("/api/login", |mut req, ctx| async move {
             let input: Credentials = match req.json().await {
@@ -168,17 +157,13 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 return fail(401, "invalid account number");
             };
             let db = ctx.d1("DB")?;
-            let account_hash = account_digest(&normalized);
-            let row = query!(&db,
-                "SELECT id FROM users WHERE account_key_hash=?1", account_hash
-            )?.first::<UserRow>(None).await?;
-            let Some(user) = row else { return fail(401, "invalid account number"); };
+            let row = query!(&db, "SELECT id FROM users WHERE account_key_hash=?1",
+                account_digest(&normalized))?.first::<UserRow>(None).await?;
+            let Some(user) = row else {return fail(401, "invalid account number");};
             let raw = token();
-            query!(&db,
-                "INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?1,?2,?3)",
-                digest(raw.as_bytes()), user.id, now()+86400
-            )?.run().await?;
-            Response::from_json(&Token { token: raw })
+            query!(&db, "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?1,?2,?3)",
+                digest(raw.as_bytes()),user.id,now()+86400)?.run().await?;
+            Response::from_json(&Token {token: raw})
         })
         .post_async("/api/logout", |req, ctx| async move {
             let Some(user) = auth(&req, &ctx).await? else { return fail(401, "bearer token required"); };
