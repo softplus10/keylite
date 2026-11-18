@@ -2,8 +2,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL
+    account_key_hash TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
