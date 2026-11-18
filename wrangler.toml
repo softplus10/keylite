@@ -1,0 +1,17 @@
+name = "keylite"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-11-18"
+workers_dev = true
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[vars]
+KEYLITE_MAX_USERS = "0"
+KEYLITE_MAX_VAULTS_PER_USER = "0"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "keylite"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
