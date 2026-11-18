@@ -1,16 +1,11 @@
-use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
-use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES};
+use keylite_core::{digest, etag, matches_precondition, Head, Revision, MAX_BLOB_BYTES, CHUNK_BYTES, generate_account_number, normalize_account_number, account_digest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use worker::*;
 
 #[derive(Deserialize)]
 struct Credentials {
-    email: String,
-    password: String,
+    account_number: String,
 }
 #[derive(Deserialize)]
 struct CreateVault {
@@ -19,7 +14,6 @@ struct CreateVault {
 #[derive(Deserialize)]
 struct UserRow {
     id: String,
-    password_hash: String,
 }
 #[derive(Deserialize)]
 struct AuthRow {
@@ -49,6 +43,11 @@ struct ChunkRow {
 #[derive(Deserialize)]
 struct CountRow {
     count: i64,
+}
+#[derive(Serialize)]
+struct RegistrationResponse {
+    account_number: String,
+    token: String,
 }
 #[derive(Serialize)]
 struct Token {
@@ -134,50 +133,52 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         return with_cors(Response::empty()?.with_status(204));
     }
     let response = Router::new()
-        .post_async("/api/register", |mut req, ctx| async move {
-            let input: Credentials = match req.json().await {
-                Ok(input) => input, Err(_) => return fail(400, "invalid request")
-            };
-            let email = input.email.trim().to_lowercase();
-            if !email.contains('@') || email.len() > 254 ||
-                input.password.len() < 12 || input.password.len() > 1024 {
-                return fail(400, "invalid email or password length");
-            }
-            let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
-                .map_err(|_| Error::RustError("salt generation failed".into()))?;
-            let hash = Argon2::default()
-                .hash_password(input.password.as_bytes(), &salt)
-                .map_err(|_| Error::RustError("password hashing failed".into()))?
-                .to_string();
+        .post_async("/api/register", |_req, ctx| async move {
+            let account_number = generate_account_number(
+                &random_id(), &random_id()
+            );
+            let normalized = normalize_account_number(&account_number)
+                .ok_or_else(|| Error::RustError("invalid generated account".into()))?;
+            let account_hash = account_digest(&normalized);
+            let user_id = random_id();
             let db = ctx.d1("DB")?;
             let max = quota(&ctx.env, "KEYLITE_MAX_USERS");
             let result = query!(&db,
-                "INSERT INTO users (id,email,password_hash)
+                "INSERT INTO users (id,account_key_hash,created_at)
                  SELECT ?1,?2,?3 WHERE ?4=0 OR (SELECT count(*) FROM users)<?4",
-                random_id(), email, hash, max
-            )?.run().await;
-            match result {
-                Ok(result) if affected(&result)? => Ok(Response::empty()?.with_status(201)),
-                Ok(_) => fail(403, "user registration limit reached"),
-                Err(_) => fail(409, "account already exists"),
+                user_id, account_hash, now(), max
+            )?.run().await?;
+            if !affected(&result)? {
+                return fail(403, "user registration limit reached");
             }
+            let raw = token();
+            query!(&db,
+                "INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?1,?2,?3)",
+                digest(raw.as_bytes()), user_id, now()+86400
+            )?.run().await?;
+            Ok(Response::from_json(&RegistrationResponse {
+                account_number, token: raw
+            })?.with_status(201))
         })
         .post_async("/api/login", |mut req, ctx| async move {
             let input: Credentials = match req.json().await {
                 Ok(input) => input, Err(_) => return fail(400, "invalid request")
             };
+            let Some(normalized) = normalize_account_number(&input.account_number) else {
+                return fail(401, "invalid account number");
+            };
             let db = ctx.d1("DB")?;
-            let email = input.email.trim().to_lowercase();
-            let row = query!(&db, "SELECT id,password_hash FROM users WHERE email=?1", email)?
-                .first::<UserRow>(None).await?;
-            let valid = row.as_ref().and_then(|r| PasswordHash::new(&r.password_hash).ok())
-                .map(|hash| Argon2::default().verify_password(input.password.as_bytes(), &hash).is_ok())
-                .unwrap_or(false);
-            if !valid { return fail(401, "invalid credentials"); }
+            let account_hash = account_digest(&normalized);
+            let row = query!(&db,
+                "SELECT id FROM users WHERE account_key_hash=?1", account_hash
+            )?.first::<UserRow>(None).await?;
+            let Some(user) = row else { return fail(401, "invalid account number"); };
             let raw = token();
-            query!(&db, "INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?1,?2,?3)",
-                digest(raw.as_bytes()), row.unwrap().id, now()+86400)?.run().await?;
-            Response::from_json(&Token {token: raw})
+            query!(&db,
+                "INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?1,?2,?3)",
+                digest(raw.as_bytes()), user.id, now()+86400
+            )?.run().await?;
+            Response::from_json(&Token { token: raw })
         })
         .post_async("/api/logout", |req, ctx| async move {
             let Some(user) = auth(&req, &ctx).await? else { return fail(401, "bearer token required"); };
